@@ -3,6 +3,21 @@ import numpy as np
 import pickle
 import mediapipe as mp
 import time
+import pyttsx3
+
+# ── TTS Engine untuk suara ───────────────────────────────────
+tts_engine = pyttsx3.init()
+tts_engine.setProperty('rate', 150)
+tts_engine.setProperty('volume', 1.0)
+
+def speak_letter(letter):
+    """Bicara huruf dengan suara"""
+    if letter and letter != "-":
+        try:
+            tts_engine.say(letter)
+            tts_engine.runAndWait()
+        except:
+            pass
 
 # Load model baru
 with open("model_bisindo_nn.pkl", "rb") as f:
@@ -104,6 +119,8 @@ with HandLandmarker.create_from_options(options) as landmarker:
                         sekarang - waktu_terakhir > DELAY):
                     kata += prediksi_stabil
                     waktu_terakhir = sekarang
+                    # 🔊 PUTAR SUARA KETIKA HURUF TERDETEKSI
+                    speak_letter(prediksi_stabil)
 
                 huruf_terakhir = prediksi_stabil
 

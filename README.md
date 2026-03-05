@@ -18,6 +18,7 @@ Aplikasi pengenalan gesture tangan BISINDO (Bahasa Isyarat Indonesia) menggunaka
 - ✅ Pengenalan 26 huruf A-Z
 - ✅ Model Machine Learning (Neural Network, Random Forest, Gradient Boosting)
 - ✅ Real-time detection via webcam
+- ✅ **🔊 Suara untuk setiap huruf yang terdeteksi** (Text-to-Speech)
 - ✅ Web interface dengan Flask
 - ✅ Pengumpulan data training otomatis
 - ✅ Training & evaluasi model
@@ -71,6 +72,7 @@ pip install opencv-python
 pip install numpy
 pip install scikit-learn
 pip install mediapipe
+pip install pyttsx3
 ```
 
 ### 4. Verifikasi Instalasi
@@ -130,7 +132,7 @@ python latih_model.py
 - Accuracy score pada test data
 - Classification report per huruf
 
-### 3. Deteksi Real-Time (Command Line)
+### 2. Deteksi Real-Time (Command Line)
 
 Untuk menjalankan deteksi langsung via terminal:
 
@@ -141,6 +143,7 @@ python deteksi.py
 **Instruksi:**
 - Tampilkan gesture tangan di depan webcam
 - Sistem akan menampilkan prediksi huruf secara real-time
+- **🔊 Setiap huruf yang terdeteksi akan diucapkan secara otomatis**
 - Tekan **Q** untuk keluar
 
 **Fitur:**
@@ -148,6 +151,7 @@ python deteksi.py
 - Confidence score untuk setiap prediksi
 - Smooth prediction dengan window history (10 frame)
 - Delay 2 detik sebelum menambah huruf baru
+- **Text-to-Speech otomatis untuk feedback audio**
 
 ### 4. Aplikasi Web (Flask)
 
@@ -163,6 +167,7 @@ python app.py
 **Fitur Web:**
 - 📹 Live webcam streaming
 - 🔤 Real-time gesture recognition
+- � **Audio feedback untuk setiap huruf terdeteksi**
 - 📝 Construct sentences dari gestures
 - ➕ Accumulate words/letters
 - 🗑️ Clear/Reset functionality
@@ -172,8 +177,9 @@ python app.py
 1. Buka `http://localhost:5000` di browser
 2. Izinkan akses webcam
 3. Tampilkan gesture huruf di depan kamera
-4. Huruf akan ditampilkan di layar secara real-time
-5. Tekan tombol untuk mengakumulasi kata atau kalimat
+4. **🔊 Huruf akan diucapkan otomatis saat terdeteksi**
+5. Huruf ditampilkan di layar secara real-time
+6. Tekan tombol untuk mengakumulasi kata atau kalimat
 
 ---
 
@@ -187,6 +193,7 @@ sibi_python/
 ├── konversi_dataset.py             # Dataset conversion utility
 ├── latih_model.py                  # Model training script
 ├── cekinstall.py                   # Dependency checker
+├── tts_handler.py                  # Text-to-Speech handler
 │
 ├── hand_landmarker.task            # MediaPipe pre-trained model
 │
@@ -206,6 +213,7 @@ sibi_python/
 ├── templates/
 │   └── index.html                  # Web interface HTML
 │
+├── requirements.txt                # Python dependencies
 └── README.md                       # Dokumentasi ini
 ```
 
@@ -215,13 +223,15 @@ sibi_python/
 
 | File | Fungsi |
 |------|--------|
-| `app.py` | Flask server untuk web interface dengan live streaming |
-| `deteksi.py` | Terminal-based real-time gesture detection |
+| `app.py` | Flask server untuk web interface dengan live streaming & suara otomatis |
+| `deteksi.py` | Terminal-based real-time gesture detection dengan TTS |
 | `kumpul_data.py` | Mengumpulkan data training dari webcam |
 | `latih_model.py` | Training model menggunakan sklearn ensemble |
 | `konversi_dataset.py` | Utility untuk konversi format data |
 | `cekinstall.py` | Memeriksa instalasi library yang diperlukan |
+| `tts_handler.py` | Handler untuk Text-to-Speech (optional untuk implementasi lanjut) |
 | `hand_landmarker.task` | Model MediaPipe untuk landmark detection |
+| `requirements.txt` | Daftar semua dependencies Python |
 
 ---
 
@@ -290,6 +300,22 @@ Proyek ini menggunakan **Voting Classifier** dengan 3 models:
 3. **Gradient Boosting** - High accuracy, sequential learning
 
 Ensemble voting mengambil prediksi mayoritas dari ketiga model untuk hasil yang lebih akurat.
+
+## 🔊 Fitur Text-to-Speech
+
+Aplikasi dilengkapi dengan fitur suara otomatis yang menggunakan **pyttsx3**:
+
+- **Real-time Audio Feedback**: Setiap huruf yang terdeteksi langsung diucapkan
+- **Offline**: Tidak butuh koneksi internet
+- **Customizable**: Kecepatan dan volume bisa disesuaikan di file `deteksi.py` atau `app.py`
+- **Non-blocking**: Suara tidak mengganggu proses deteksi
+
+Untuk mengatur kecepatan suara, edit file:
+
+```python
+tts_engine.setProperty('rate', 150)      # 100-200 (semakin besar = semakin cepat)
+tts_engine.setProperty('volume', 1.0)    # 0.0 - 1.0 (0 = senyap, 1 = maksimal)
+```
 
 ---
 

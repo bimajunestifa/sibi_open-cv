@@ -1,4 +1,6 @@
 from flask import Flask, render_template, Response, jsonify
+import warnings
+warnings.filterwarnings('ignore')   # ← hilangkan warning sklearn/joblib
 import cv2
 import numpy as np
 import pickle
@@ -9,6 +11,14 @@ import threading
 
 app = Flask(__name__)
 
+# ── TTS Handler (Bahasa Indonesia via gTTS) ──────────────────
+from tts_handler import get_tts_handler as _get_tts
+_tts = _get_tts()
+
+def speak_letter_async(letter):
+    """Ucapkan huruf dalam Bahasa Indonesia"""
+    _tts.speak_letter(letter)
+
 # ── Load model ───────────────────────────────────────────────
 try:
     with open("model_bisindo_nn.pkl", "rb") as f:
@@ -17,31 +27,31 @@ try:
         le = pickle.load(f)
     with open("scaler.pkl", "rb") as f:
         scaler = pickle.load(f)
-    print("Model SIBI berhasil dimuat!")
+    print("✅ Model SIBI berhasil dimuat!")
 except Exception as e:
-    print(f"Error load model: {e}")
+    print(f"❌ Error load model: {e}")
     model = le = scaler = None
 
 # ── MediaPipe ────────────────────────────────────────────────
-BaseOptions       = mp.tasks.BaseOptions
-HandLandmarker    = mp.tasks.vision.HandLandmarker
+BaseOptions           = mp.tasks.BaseOptions
+HandLandmarker        = mp.tasks.vision.HandLandmarker
 HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
-VisionRunningMode = mp.tasks.vision.RunningMode
+VisionRunningMode     = mp.tasks.vision.RunningMode
 
 MODEL_PATH = "hand_landmarker.task"
 options = HandLandmarkerOptions(
     base_options=BaseOptions(model_asset_path=MODEL_PATH),
     running_mode=VisionRunningMode.IMAGE,
-    num_hands=1
+    num_hands=1,
 )
 
-# ── Normalisasi (sama dengan kumpul_data.py) ─────────────────
+# ── Normalisasi landmark ─────────────────────────────────────
 def normalisasi_landmark(landmarks):
     data = np.array([[lm.x, lm.y, lm.z] for lm in landmarks])
-    data -= data[0].copy()          # geser ke wrist
+    data -= data[0].copy()
     scale = np.max(np.abs(data))
     if scale > 0:
-        data /= scale               # skala seragam
+        data /= scale
     return data.flatten().tolist()
 
 # ── State ────────────────────────────────────────────────────
@@ -57,48 +67,99 @@ state = {
     "huruf_terakhir": "",
     "total_deteksi": 0,
 }
-DELAY  = 2.0
-WINDOW = 10          # jumlah frame untuk voting
+DELAY  = 1.0     # ← dipercepat dari 2.0 → 1.0 detik
+WINDOW = 5       # ← window lebih kecil = tidak perlu konsisten penuh
 lock   = threading.Lock()
 
-# ── Frame buffer (agar video smooth) ─────────────────────────
-frame_buffer = {"frame": None, "lock": threading.Lock()}
+# ── Frame buffers ─────────────────────────────────────────────
+raw_buffer  = {"frame": None, "lock": threading.Lock(), "new": False}
+show_buffer = {"frame": None, "lock": threading.Lock()}
 
-def camera_thread():
-    """Thread khusus baca kamera — tidak blocking render"""
+CONNECTIONS = [
+    (0,1),(1,2),(2,3),(3,4),
+    (0,5),(5,6),(6,7),(7,8),
+    (0,9),(9,10),(10,11),(11,12),
+    (0,13),(13,14),(14,15),(15,16),
+    (0,17),(17,18),(18,19),(19,20),
+    (5,9),(9,13),(13,17)
+]
+
+# ============================================================
+# KONFIGURASI PERFORMA — sesuaikan di sini jika masih berat
+# ============================================================
+PROC_WIDTH      = 480   # resolusi saat diproses MediaPipe
+PROC_HEIGHT     = 360
+FRAME_SKIP      = 2     # proses 1 dari setiap N frame kamera
+TARGET_PROC_FPS = 10    # max FPS proses MediaPipe (T440p optimal 10)
+TARGET_STR_FPS  = 20    # max FPS stream ke browser
+JPEG_QUALITY    = 55    # kualitas JPEG stream (40-70 cukup)
+
+# ============================================================
+# THREAD 1 – KAMERA: baca + skip frame + resize kecil
+# ============================================================
+def camera_read_thread():
     cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # buffer minimal → frame segar
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     cap.set(cv2.CAP_PROP_FPS, 30)
+
+    frame_count = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            time.sleep(0.02)
+            continue
+
+        frame_count += 1
+        frame = cv2.flip(frame, 1)
+
+        # Skip frame — hanya simpan setiap FRAME_SKIP frame
+        if frame_count % FRAME_SKIP == 0:
+            small = cv2.resize(frame, (PROC_WIDTH, PROC_HEIGHT),
+                               interpolation=cv2.INTER_NEAREST)
+            with raw_buffer["lock"]:
+                raw_buffer["frame"] = small
+                raw_buffer["new"]   = True
+
+    cap.release()
+
+# ============================================================
+# THREAD 2 – PROSES MediaPipe + ML
+# ============================================================
+def process_thread():
+    interval = 1.0 / TARGET_PROC_FPS
 
     with HandLandmarker.create_from_options(options) as landmarker:
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                time.sleep(0.01)
-                continue
+            t0 = time.time()
 
-            frame = cv2.flip(frame, 1)
-            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            result = landmarker.detect(mp_img)
+            # Tunggu frame baru
+            with raw_buffer["lock"]:
+                if not raw_buffer["new"]:
+                    time.sleep(0.01)
+                    continue
+                frame = raw_buffer["frame"].copy()
+                raw_buffer["new"] = False
+
+            h, w, _ = frame.shape
+            rgb     = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_img  = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            result  = landmarker.detect(mp_img)
 
             tangan_ada = bool(result.hand_landmarks)
 
             if tangan_ada and model:
                 landmarks = result.hand_landmarks[0]
-                h, w, _   = frame.shape
                 titik = []
 
                 for lm in landmarks:
                     cx, cy = int(lm.x * w), int(lm.y * h)
                     titik.append((cx, cy))
-                    cv2.circle(frame, (cx, cy), 5, (0, 255, 150), -1)
-                    cv2.circle(frame, (cx, cy), 8, (0, 255, 150), 1)
+                    cv2.circle(frame, (cx, cy), 4, (0, 255, 150), -1)
 
-                for a, b in [(0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),
-                             (0,9),(9,10),(10,11),(11,12),(0,13),(13,14),(14,15),
-                             (15,16),(0,17),(17,18),(18,19),(19,20),(5,9),(9,13),(13,17)]:
-                    cv2.line(frame, titik[a], titik[b], (0, 180, 255), 2)
+                for a, b in CONNECTIONS:
+                    cv2.line(frame, titik[a], titik[b], (0, 180, 255), 1)
 
                 data_point = normalisasi_landmark(landmarks)
 
@@ -106,36 +167,52 @@ def camera_thread():
                     data_norm    = scaler.transform([data_point])
                     prediksi_idx = model.predict(data_norm)[0]
                     prediksi     = le.inverse_transform([prediksi_idx])[0]
-                    confidence   = float(np.max(model.predict_proba(data_norm)) * 100)
+                    confidence   = float(
+                        np.max(model.predict_proba(data_norm)) * 100)
 
                     with lock:
                         state["prediksi_window"].append(prediksi)
                         if len(state["prediksi_window"]) > WINDOW:
                             state["prediksi_window"].pop(0)
-                        prediksi_stabil = Counter(state["prediksi_window"]).most_common(1)[0][0]
+
+                        # ── Voting fleksibel ──────────────────────────────
+                        # Huruf diterima jika muncul >= 35% di window
+                        # Contoh: dari 5 frame, cukup muncul 2x → diterima
+                        counter = Counter(state["prediksi_window"])
+                        top_huruf, top_count = counter.most_common(1)[0]
+                        rasio = top_count / len(state["prediksi_window"])
+                        prediksi_stabil = top_huruf if rasio >= 0.35 else state["huruf_terakhir"]
 
                         sekarang = time.time()
+                        # Gunakan confidence rata-rata window, bukan hanya frame ini
                         if (prediksi_stabil == state["huruf_terakhir"] and
-                                confidence > 70 and
+                                confidence > 45 and          # threshold longgar → 45%
                                 sekarang - state["waktu_terakhir"] > DELAY):
-                            state["kata"] += prediksi_stabil
+                            state["kata"]          += prediksi_stabil
                             state["total_deteksi"] += 1
                             state["riwayat"].insert(0, {
-                                "huruf": prediksi_stabil,
+                                "huruf":      prediksi_stabil,
                                 "confidence": round(confidence, 1),
-                                "waktu": time.strftime("%H:%M:%S")
+                                "waktu":      time.strftime("%H:%M:%S"),
                             })
                             if len(state["riwayat"]) > 30:
                                 state["riwayat"].pop()
                             state["waktu_terakhir"] = sekarang
+                            speak_letter_async(prediksi_stabil)
 
                         state["huruf_terakhir"]    = prediksi_stabil
                         state["huruf"]             = prediksi_stabil
                         state["confidence"]        = round(confidence, 1)
                         state["tangan_terdeteksi"] = True
 
+                    # Tampilkan huruf langsung di frame video
+                    huruf_now = state["huruf"]
+                    conf_now  = state["confidence"]
+                    cv2.putText(frame, f"{huruf_now}  {conf_now:.0f}%",
+                                (10, h - 15),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.2,
+                                (0, 255, 100), 3, cv2.LINE_AA)
             else:
-                # ── Tangan tidak ada → reset semua ──────────
                 with lock:
                     state["huruf"]             = "-"
                     state["confidence"]        = 0
@@ -143,34 +220,48 @@ def camera_thread():
                     state["prediksi_window"]   = []
                     state["huruf_terakhir"]    = ""
 
-            # Simpan frame ke buffer
-            with frame_buffer["lock"]:
-                frame_buffer["frame"] = frame.copy()
+            with show_buffer["lock"]:
+                show_buffer["frame"] = frame
 
-    cap.release()
+            elapsed = time.time() - t0
+            wait    = interval - elapsed
+            if wait > 0:
+                time.sleep(wait)
 
-
-# Jalankan thread kamera saat server start
-cam_thread = threading.Thread(target=camera_thread, daemon=True)
-cam_thread.start()
-
-
+# ============================================================
+# STREAMING ke browser
+# ============================================================
 def generate_frames():
-    """Stream frame dari buffer ke browser"""
+    interval      = 1.0 / TARGET_STR_FPS
+    encode_params = [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
+
     while True:
-        with frame_buffer["lock"]:
-            frame = frame_buffer["frame"]
+        t0 = time.time()
+
+        with show_buffer["lock"]:
+            frame = show_buffer["frame"]
 
         if frame is None:
-            time.sleep(0.01)
+            time.sleep(0.02)
             continue
 
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        # Resize ke 640x480 untuk tampilan browser
+        display = cv2.resize(frame, (640, 480),
+                             interpolation=cv2.INTER_NEAREST)
+        _, buffer = cv2.imencode('.jpg', display, encode_params)
+
         yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+               b'Content-Type: image/jpeg\r\n\r\n' +
+               buffer.tobytes() + b'\r\n')
 
-        time.sleep(1/30)   # 30 fps max
+        elapsed = time.time() - t0
+        wait    = interval - elapsed
+        if wait > 0:
+            time.sleep(wait)
 
+# Start threads
+threading.Thread(target=camera_read_thread, daemon=True).start()
+threading.Thread(target=process_thread,     daemon=True).start()
 
 # ── Routes ───────────────────────────────────────────────────
 @app.route('/')
@@ -187,7 +278,6 @@ def status():
     with lock:
         sekarang = time.time()
         sisa     = max(0, DELAY - (sekarang - state["waktu_terakhir"]))
-        # Timer hanya jalan kalau tangan terdeteksi
         if not state["tangan_terdeteksi"]:
             sisa = DELAY
         return jsonify({
@@ -202,21 +292,21 @@ def status():
             "kalimat_list":      state["kalimat_list"],
         })
 
-@app.route('/hapus_kata', methods=['POST'])
+@app.route('/hapus_kata',     methods=['POST'])
 def hapus_kata():
     with lock:
         state["kata"] = ""
         state["prediksi_window"] = []
     return jsonify({"ok": True})
 
-@app.route('/hapus_huruf', methods=['POST'])
+@app.route('/hapus_huruf',    methods=['POST'])
 def hapus_huruf():
     with lock:
         if state["kata"]:
             state["kata"] = state["kata"][:-1]
-    return jsonify({"ok": True})
+        return jsonify({"ok": True})
 
-@app.route('/tambah_spasi', methods=['POST'])
+@app.route('/tambah_spasi',   methods=['POST'])
 def tambah_spasi():
     with lock:
         state["kata"] += " "
@@ -227,8 +317,8 @@ def simpan_kalimat():
     with lock:
         if state["kata"].strip():
             state["kalimat_list"].insert(0, {
-                "teks": state["kata"].strip(),
-                "waktu": time.strftime("%H:%M:%S")
+                "teks":  state["kata"].strip(),
+                "waktu": time.strftime("%H:%M:%S"),
             })
             if len(state["kalimat_list"]) > 10:
                 state["kalimat_list"].pop()
@@ -236,15 +326,15 @@ def simpan_kalimat():
             state["prediksi_window"] = []
     return jsonify({"ok": True})
 
-@app.route('/hapus_riwayat', methods=['POST'])
+@app.route('/hapus_riwayat',  methods=['POST'])
 def hapus_riwayat():
     with lock:
         state["riwayat"] = []
     return jsonify({"ok": True})
 
 if __name__ == '__main__':
-    print("="*50)
+    print("=" * 50)
     print("  SIBI - Sistem Isyarat Bahasa Indonesia")
     print("  Buka browser: http://localhost:5000")
-    print("="*50)
+    print("=" * 50)
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

@@ -1,0 +1,76 @@
+🔊 QUICK START - FITUR SUARA
+=============================
+
+## Install & Run (Cepat)
+
+```bash
+# 1. Install pyttsx3 (jika belum)
+pip install pyttsx3
+
+# 2. Verify instalasi
+python cekinstall.py
+
+# 3. Run app dengan suara otomatis
+python app.py
+```
+
+Buka browser: http://localhost:5000
+
+**Setiap huruf yang terdeteksi akan langsung diucapkan! 🔊**
+
+---
+
+## Mode Alternatif (Terminal)
+
+```bash
+python deteksi.py
+```
+
+Tampilkan gesture - huruf otomatis diucapkan!
+
+---
+
+## Customize Suara
+
+Edit `deteksi.py` atau `app.py` line 10:
+
+```python
+# Ubah kecepatan (semakin besar = semakin cepat)
+tts_engine.setProperty('rate', 200)  # Cepat
+
+# Ubah volume (0.0 = senyap, 1.0 = maksimal)
+tts_engine.setProperty('volume', 0.7)
+```
+
+---
+
+## Disable Suara
+
+Edit `deteksi.py` line 123 atau `app.py` line 153:
+
+```python
+# speak_letter(prediksi_stabil)  # Uncomment ini
+```
+
+---
+
+## Troubleshoot
+
+- Tidak ada suara? → Check volume Windows
+- Suara lambat? → Naikkan `rate` ke 200-250
+- Error pyttsx3? → `pip install pyttsx3`
+
+---
+
+## Files Baru
+
+- ✅ tts_handler.py - TTS handler module
+- ✅ requirements.txt - Semua dependencies
+- ✅ README.md - Dokumentasi lengkap
+- ✅ FITUR_SUARA.md - Panduan detail
+- ✅ CHANGELOG.md - Perubahan
+- ✅ IMPLEMENTASI_SUMMARY.txt - Full summary
+
+---
+
+**Status: READY TO USE! 🎉**

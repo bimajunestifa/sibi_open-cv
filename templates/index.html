@@ -63,7 +63,6 @@ nav {
   animation: blink 1.4s ease-in-out infinite;
 }
 
-/* Indikator tangan */
 .hand-pill {
   display: flex; align-items: center; gap: 7px;
   padding: 6px 14px;
@@ -126,7 +125,6 @@ nav {
   font-family: 'DM Mono', monospace; font-size: 10px; color: var(--muted); letter-spacing: 1px; z-index: 2;
 }
 
-/* No-hand overlay */
 .no-hand-overlay {
   position: absolute; inset: 0; z-index: 3;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -171,7 +169,7 @@ nav {
 .bar-row  { display: flex; justify-content: space-between; }
 .bar-val  { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--text); }
 .track    { height: 8px; background: var(--card2); border-radius: 4px; overflow: hidden; }
-.fill     { height: 100%; border-radius: 4px; transition: width .2s ease, background .2s ease; }
+.fill     { height: 100%; border-radius: 4px; transition: width .3s ease, background .3s ease; }
 .conf-low  { background: var(--red); }
 .conf-mid  { background: var(--yellow); }
 .conf-high { background: var(--green); box-shadow: 0 0 8px rgba(61,255,160,.4); }
@@ -250,6 +248,15 @@ nav {
   border-radius: 5px; font-family: 'DM Mono', monospace; font-size: 10px; color: var(--text); flex-shrink: 0;
 }
 
+/* FPS monitor kecil */
+.fps-pill {
+  position: fixed; bottom: 14px; right: 14px;
+  padding: 4px 10px; background: rgba(14,16,26,.85);
+  border: 1px solid var(--border); border-radius: 999px;
+  font-family: 'DM Mono', monospace; font-size: 10px; color: var(--muted);
+  z-index: 999; pointer-events: none;
+}
+
 .empty { text-align: center; padding: 20px; color: var(--muted); font-size: 12px; font-family: 'DM Mono', monospace; }
 
 @keyframes blink   { 0%,100%{opacity:1} 50%{opacity:0} }
@@ -284,7 +291,7 @@ nav {
       <div class="corner tl"></div><div class="corner tr"></div>
       <div class="corner bl"></div><div class="corner br"></div>
       <div class="cam-tag">WEBCAM · REAL-TIME</div>
-      <img src="/video_feed" alt="Kamera">
+      <img src="/video_feed" alt="Kamera" loading="lazy">
       <div class="no-hand-overlay" id="noHandOverlay">
         <div class="no-hand-icon">✋</div>
         <div class="no-hand-text">Arahkan tangan ke kamera</div>
@@ -349,8 +356,8 @@ nav {
     <div class="card">
       <div class="label-sm">Panduan</div>
       <div class="shortcut-grid">
-        <div class="sc-item"><span class="kbd">Tahan 2s</span>Tambah huruf</div>
-        <div class="sc-item"><span class="kbd">&gt;70%</span>Min. keyakinan</div>
+        <div class="sc-item"><span class="kbd">Tahan 1s</span>Tambah huruf</div>
+        <div class="sc-item"><span class="kbd">&gt;45%</span>Min. keyakinan</div>
         <div class="sc-item"><span class="kbd">Space</span>Tambah spasi</div>
         <div class="sc-item"><span class="kbd">Backspace</span>Hapus huruf</div>
         <div class="sc-item"><span class="kbd">Enter</span>Simpan kalimat</div>
@@ -361,48 +368,72 @@ nav {
   </div>
 </div>
 
+<!-- Monitor polling kecil di sudut kanan bawah -->
+<div class="fps-pill" id="fpsPill">poll: —ms</div>
+
 <script>
-let prevHuruf = null;
+let prevHuruf   = null;
+let prevKata    = null;
+let prevRiwayatLen = 0;
+let isFetching  = false;
+
+// ── polling adaptif ──────────────────────────────────────────
+// Saat tangan AKTIF  → poll setiap 400ms  (cukup responsif)
+// Saat tangan TIDAK ADA → poll setiap 800ms (hemat CPU)
+let pollInterval = 500;
+let pollTimer    = null;
+
+function schedulePoll(delay) {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(fetchStatus, delay);
+}
 
 async function fetchStatus() {
+  if (isFetching) { schedulePoll(pollInterval); return; }
+  isFetching = true;
+  const t0 = performance.now();
+
   try {
     const d = await (await fetch('/status')).json();
+    const elapsed = Math.round(performance.now() - t0);
+    document.getElementById('fpsPill').textContent = `poll: ${elapsed}ms`;
 
-    // ── Indikator tangan ──────────────────────────────────
-    const pill     = document.getElementById('handPill');
-    const handText = document.getElementById('handText');
-    const overlay  = document.getElementById('noHandOverlay');
+    const pill      = document.getElementById('handPill');
+    const handText  = document.getElementById('handText');
+    const overlay   = document.getElementById('noHandOverlay');
     const detectRow = document.getElementById('detectRow');
     const bigLetter = document.getElementById('bigLetter');
 
     if (d.tangan_terdeteksi) {
+      pollInterval = 400;   // tangan ada → lebih cepat
+
       pill.className = 'hand-pill detected';
       handText.textContent = 'Tangan terdeteksi';
       overlay.classList.remove('show');
       detectRow.classList.add('active');
 
-      // Update huruf besar
       if (d.huruf !== prevHuruf) {
-        bigLetter.classList.remove('pop', 'empty');
+        bigLetter.className = 'big-letter';
+        bigLetter.classList.remove('pop');
         void bigLetter.offsetWidth;
         bigLetter.classList.add('pop');
         prevHuruf = d.huruf;
       }
       bigLetter.textContent = d.huruf === '-' ? '?' : d.huruf;
 
-      // Confidence
+      // Confidence — warna sesuai threshold baru 45%
       const c = d.confidence;
       document.getElementById('confVal').textContent = c + '%';
       const cb = document.getElementById('confBar');
       cb.style.width = c + '%';
-      cb.className = 'fill ' + (c >= 70 ? 'conf-high' : c >= 50 ? 'conf-mid' : 'conf-low');
+      cb.className = 'fill ' + (c >= 65 ? 'conf-high' : c >= 45 ? 'conf-mid' : 'conf-low');
 
-      // Timer
       document.getElementById('timerVal').textContent = d.timer_sisa + 's';
       document.getElementById('timerBar').style.width = d.timer_progress + '%';
 
     } else {
-      // Tangan tidak ada — reset tampilan
+      pollInterval = 800;   // tangan tidak ada → hemat CPU
+
       pill.className = 'hand-pill not-detected';
       handText.textContent = 'Tangan tidak terdeteksi';
       overlay.classList.add('show');
@@ -418,12 +449,14 @@ async function fetchStatus() {
       document.getElementById('timerBar').style.width = '0%';
     }
 
-    // Total
     document.getElementById('totalDeteksi').textContent = d.total_deteksi;
 
-    // Kata
-    document.getElementById('kataOutput').innerHTML =
-      (d.kata || '') + '<span class="cur"></span>';
+    // Kata — hanya update DOM kalau berubah
+    if (d.kata !== prevKata) {
+      document.getElementById('kataOutput').innerHTML =
+        (d.kata || '') + '<span class="cur"></span>';
+      prevKata = d.kata;
+    }
 
     // Kalimat
     const kl = document.getElementById('kalimatList');
@@ -433,27 +466,35 @@ async function fetchStatus() {
         ).join('')
       : '<div class="empty">Belum ada kalimat...</div>';
 
-    // Riwayat
-    const rl = document.getElementById('riwayatList');
-    rl.innerHTML = d.riwayat && d.riwayat.length
-      ? d.riwayat.map(r =>
-          `<div class="riwayat-item">
-            <div class="r-badge">${r.huruf}</div>
-            <div><div style="font-size:13px">Huruf <strong>${r.huruf}</strong></div>
-            <div class="r-time">${r.waktu}</div></div>
-            <div class="r-conf">${r.confidence}%</div>
-          </div>`
-        ).join('')
-      : '<div class="empty">Belum ada deteksi...</div>';
+    // Riwayat — hanya update kalau ada huruf baru
+    if (d.riwayat && d.riwayat.length !== prevRiwayatLen) {
+      prevRiwayatLen = d.riwayat.length;
+      const rl = document.getElementById('riwayatList');
+      rl.innerHTML = d.riwayat.length
+        ? d.riwayat.map(r =>
+            `<div class="riwayat-item">
+              <div class="r-badge">${r.huruf}</div>
+              <div><div style="font-size:13px">Huruf <strong>${r.huruf}</strong></div>
+              <div class="r-time">${r.waktu}</div></div>
+              <div class="r-conf">${r.confidence}%</div>
+            </div>`
+          ).join('')
+        : '<div class="empty">Belum ada deteksi...</div>';
+    }
 
-  } catch(e) {}
+  } catch(e) {
+    pollInterval = 1000;  // error → perlambat
+  }
+
+  isFetching = false;
+  schedulePoll(pollInterval);
 }
 
-async function hapusKata()     { await fetch('/hapus_kata',     {method:'POST'}); }
-async function hapusHuruf()    { await fetch('/hapus_huruf',    {method:'POST'}); }
-async function tambahSpasi()   { await fetch('/tambah_spasi',   {method:'POST'}); }
-async function hapusRiwayat()  { await fetch('/hapus_riwayat',  {method:'POST'}); }
-async function simpanKalimat() { await fetch('/simpan_kalimat', {method:'POST'}); }
+async function hapusKata()     { await fetch('/hapus_kata',     {method:'POST'}); prevKata = null; }
+async function hapusHuruf()    { await fetch('/hapus_huruf',    {method:'POST'}); prevKata = null; }
+async function tambahSpasi()   { await fetch('/tambah_spasi',   {method:'POST'}); prevKata = null; }
+async function hapusRiwayat()  { await fetch('/hapus_riwayat',  {method:'POST'}); prevRiwayatLen = 0; }
+async function simpanKalimat() { await fetch('/simpan_kalimat', {method:'POST'}); prevKata = null; }
 
 document.addEventListener('keydown', e => {
   if      (e.code === 'Space')     { e.preventDefault(); tambahSpasi(); }
@@ -462,8 +503,8 @@ document.addEventListener('keydown', e => {
   else if (e.code === 'Enter')     simpanKalimat();
 });
 
-setInterval(fetchStatus, 150);
-fetchStatus();
+// Mulai polling
+schedulePoll(0);
 </script>
 </body>
 </html>
